@@ -1,6 +1,3 @@
-[submodule "3rd_party/precore"]
-	path = 3rd_party/precore
-	url = https://github.com/predatorcz/precore
 [submodule "3rd_party/vgmstream"]
 	path = 3rd_party/vgmstream
 	url = https://github.com/PredatorCZ/vgmstream.git
