@@ -15,20 +15,21 @@
     along with this program.If not, see <https://www.gnu.org/licenses/>.
 */
 
-#include "datas/DirectoryScanner.hpp"
-#include "datas/MultiThread.hpp"
-#include "datas/SettingsManager.hpp"
 #include "datas/binreader.hpp"
 #include "datas/binwritter.hpp"
-#include "datas/fileinfo.hpp"
-#include "datas/reflectorRegistry.hpp"
+#include "datas/directory_scanner.hpp"
+#include "datas/master_printer.hpp"
+#include "datas/multi_thread.hpp"
+#include "datas/pugiex.hpp"
+#include "datas/reflector.hpp"
+#include "datas/reflector_xml.hpp"
+#include "datas/settings_manager.hpp"
+#include "datas/stat.hpp"
 #include "formats/DDS.hpp"
 #include "project.h"
-#include "pugixml.hpp"
+#include <algorithm>
 
-static struct TEXConvert : SettingsManager {
-  DECLARE_REFLECTOR;
-
+static struct TEXConvert : SettingsManager<TEXConvert> {
   bool Generate_Log = false;
   bool Convert_DDS_to_legacy = true;
   bool Force_unconvetional_legacy_formats = true;
@@ -36,44 +37,47 @@ static struct TEXConvert : SettingsManager {
   bool Extract_largest_mipmap = false;
 } settings;
 
-REFLECTOR_START_WNAMES(TEXConvert, Convert_DDS_to_legacy,
-                       Force_unconvetional_legacy_formats,
-                       Extract_largest_mipmap, Generate_Log);
+REFLECTOR_CREATE(
+    TEXConvert, 1, EXTENDED,
+    (D, Convert_DDS_to_legacy,
+     "Tries to convert TEX into legacy (DX9) DDS format."),
+    (D, Force_unconvetional_legacy_formats,
+     "Will try to convert some matching formats from DX10 to DX9, for "
+     "example: RG88 to AL88."),
+    (D, Extract_largest_mipmap,
+     "Will try to extract only highest mipmap.\nTexture musn't be converted "
+     "back afterwards, unless you regenerate mipmaps!\nThis setting does not "
+     "apply, if texture have arrays or is a cubemap!"),
+    (D, Generate_Log,
+     "Will generate text log of console output next to "
+     "application location."));
 
-static const char help[] = "\nConverts TEX textures.\n\
-Settings (.config file):\n\
-  Convert_DDS_to_legacy: \n\
-        Tries to convert TEX into legacy (DX9) DDS format.\n\
-  Force_unconvetional_legacy_formats:\n\
-        Will try to convert some matching formats from DX10 to DX9,\n\
-        for example: RG88 to AL88.\n\
-  Extract_largest_mipmap:\n\
-        Will try to extract only highest mipmap.\n\
-        Texture musn't be converted back afterwards, unless you regenerate mipmaps!\n\
-        This setting does not apply, if texture have arrays or is a cubemap!\n\
-  Generate_Log:\n\
-        Will generate text log of console output next to application location.\n\t ";
+static const char appHeader[] = RETEXConvert_DESC
+    " v" RETEXConvert_VERSION ", " RETEXConvert_COPYRIGHT "Lukas Cone"
+    "\nSimply drag'n'drop files/folders onto application or "
+    "use as " RETEXConvert_NAME
+    " path1 path2 ...\nTool can detect and scan folders.";
 
-static const char pressKeyCont[] = "\nPress ENTER to close.";
+static const char configHelp[] = "For settings, edit .config file.";
 
 struct RETEXMip {
   char *offset;
-  int pad;
-  uint unk;
-  uint size;
+  uint32 pad;
+  uint32 unk;
+  uint32 size;
 };
 
 struct RETEX {
-  static const int ID = CompileFourCC("TEX\0");
-  int id, version;
-  ushort width, height,
+  static constexpr uint32 ID = CompileFourCC("TEX\0");
+  uint32 id, version;
+  uint16 width, height,
       depth; // vector field
-  uchar numMips;
-  uchar numArrays;
+  uint8 numMips;
+  uint8 numArrays;
   DXGI_FORMAT format;
-  int unk01; // -1
-  int unk;   // 4 = cubemap
-  int flags;
+  int32 unk01; // -1
+  uint32 unk;  // 4 = cubemap
+  uint32 flags;
 
   const RETEXMip *Mips() const {
     return reinterpret_cast<const RETEXMip *>(this + 1);
@@ -82,211 +86,160 @@ struct RETEX {
   void Fixup() {
     char *root = reinterpret_cast<char *>(this);
     RETEXMip *mips = reinterpret_cast<RETEXMip *>(this + 1);
-    int numTotalMips = numMips * numArrays;
+    uint32 numTotalMips = numMips * numArrays;
 
-    for (int t = 0; t < numTotalMips; t++) {
-      mips[t].offset = root + reinterpret_cast<uint>(mips[t].offset);
+    for (uint32 t = 0; t < numTotalMips; t++) {
+      mips[t].offset = root + reinterpret_cast<uintptr_t>(mips[t].offset);
     }
   }
 };
 
-void FilehandleITFC(const TSTRING &fle) {
-  printline("Loading file: ", << fle);
+void FilehandleITFC(const std::string &fle) {
+  printline("Loading file: " << fle);
   BinReader rd(fle);
 
-  if (!rd.IsValid()) {
-    printerror("Cannot open file.");
-    return;
-  }
-
-  int ID;
-  rd.Read(ID);
+  uint32 id;
+  rd.Read(id);
   rd.Seek(0);
 
-  if (ID == RETEX::ID) {
-    const size_t fleSize = rd.GetSize();
-    std::string buffer;
-    rd.ReadContainer(buffer, fleSize);
-    RETEX *tex = reinterpret_cast<RETEX *>(&buffer[0]);
-    tex->Fixup();
+  if (id != RETEX::ID) {
+    throw es::InvalidHeaderError(id);
+  }
 
-    TFileInfo fleInfo0 = fle;
-    TFileInfo fleInfo1 = fleInfo0.GetFileName();
-    TSTRING outFile = fleInfo0.GetPath() + fleInfo1.GetFileName() + _T(".dds");
-    std::ofstream ofs(outFile, std::ios::out | std::ios::binary);
+  const size_t fleSize = rd.GetSize();
+  std::string buffer;
+  rd.ReadContainer(buffer, fleSize);
+  RETEX *tex = reinterpret_cast<RETEX *>(&buffer[0]);
+  tex->Fixup();
 
-    DDS ddtex = {};
-    ddtex = DDSFormat_DX10;
-    ddtex.dxgiFormat = tex->format;
-    ddtex.width = tex->width;
-    ddtex.height = tex->height;
+  AFileInfo fleInfo0(fle);
+  auto outFile = fleInfo0.GetFullPathNoExt().to_string() + ".dds";
+  BinWritter wr(outFile);
 
-    if (tex->depth > 1) {
-      ddtex.depth = tex->depth;
-      ddtex.flags += DDS::Flags_Depth;
-      ddtex.caps01 += DDS_HeaderEnd::Caps01Flags_Volume;
-    } else if (tex->unk != 4) {
-      ddtex.arraySize = tex->numArrays;
-    } else {
-      ddtex.caps01 = decltype(ddtex.caps01)(DDS::Caps01Flags_CubeMap,
-                                            DDS::Caps01Flags_CubeMap_NegativeX,
-                                            DDS::Caps01Flags_CubeMap_NegativeY,
-                                            DDS::Caps01Flags_CubeMap_NegativeZ,
-                                            DDS::Caps01Flags_CubeMap_PositiveX,
-                                            DDS::Caps01Flags_CubeMap_PositiveY,
-                                            DDS::Caps01Flags_CubeMap_PositiveZ);
+  DDS ddtex = {};
+  ddtex = DDSFormat_DX10;
+  ddtex.dxgiFormat = tex->format;
+  ddtex.width = tex->width;
+  ddtex.height = tex->height;
+
+  if (tex->depth > 1) {
+    ddtex.depth = tex->depth;
+    ddtex.flags += DDS::Flags_Depth;
+    ddtex.caps01 += DDS_HeaderEnd::Caps01Flags_Volume;
+  } else if (tex->unk != 4) {
+    ddtex.arraySize = tex->numArrays;
+  } else {
+    ddtex.caps01 = decltype(ddtex.caps01)(
+        DDS::Caps01Flags_CubeMap, DDS::Caps01Flags_CubeMap_NegativeX,
+        DDS::Caps01Flags_CubeMap_NegativeY, DDS::Caps01Flags_CubeMap_NegativeZ,
+        DDS::Caps01Flags_CubeMap_PositiveX, DDS::Caps01Flags_CubeMap_PositiveY,
+        DDS::Caps01Flags_CubeMap_PositiveZ);
+  }
+
+  ddtex.NumMipmaps(settings.Extract_largest_mipmap ? 1 : tex->numMips);
+
+  const uint32 sizetoWrite =
+      !settings.Convert_DDS_to_legacy || ddtex.arraySize > 1 ||
+              ddtex.ToLegacy(settings.Force_unconvetional_legacy_formats)
+          ? ddtex.DDS_SIZE
+          : ddtex.LEGACY_SIZE;
+
+  if (settings.Convert_DDS_to_legacy && sizetoWrite == ddtex.DDS_SIZE) {
+    printwarning("Couldn't convert DX10 dds to legacy.")
+  }
+
+  wr.WriteBuffer(reinterpret_cast<const char *>(&ddtex), sizetoWrite);
+
+  const RETEXMip *mips = tex->Mips();
+  const uint32 mipPerArray = tex->numMips;
+
+  for (uint32 a = 0; a < tex->numArrays; a++) {
+    for (uint32 m = 0; m < ddtex.mipMapCount; m++) {
+      const RETEXMip &cMip = mips[m + mipPerArray * a];
+      wr.WriteBuffer(cMip.offset, cMip.size * tex->depth);
     }
-
-    ddtex.NumMipmaps(settings.Extract_largest_mipmap ? 1 : tex->numMips);
-
-    const int sizetoWrite =
-        !settings.Convert_DDS_to_legacy || ddtex.arraySize > 1 ||
-                ddtex.ToLegacy(settings.Force_unconvetional_legacy_formats)
-            ? ddtex.DDS_SIZE
-            : ddtex.LEGACY_SIZE;
-
-    if (settings.Convert_DDS_to_legacy && sizetoWrite == ddtex.DDS_SIZE) {
-      printwarning("Couldn't convert DX10 dds to legacy.")
-    }
-
-    ofs.write(reinterpret_cast<const char *>(&ddtex), sizetoWrite);
-
-    const RETEXMip *mips = tex->Mips();
-    const int mipPerArray = tex->numMips;
-
-    for (int a = 0; a < tex->numArrays; a++) {
-      for (int m = 0; m < ddtex.mipMapCount; m++) {
-        const RETEXMip &cMip = mips[m + mipPerArray * a];
-        ofs.write(cMip.offset, cMip.size * tex->depth);
-      }
-    }
-
-    ofs.close();
   }
 }
 
-struct TexQueueTraits {
-  int queue;
-  int queueEnd;
-  TCHAR **files;
-  typedef void return_type;
-
-  return_type RetreiveItem() {
-    TSTRING filepath = files[queue];
-
-    if (filepath.find('.') == filepath.npos)
-      return;
-
-    FilehandleITFC(filepath);
-  }
-
-  operator bool() { return queue < queueEnd; }
-  void operator++(int) { queue++; }
-  int NumQueues() const { return queueEnd - 1; }
-};
-
-struct TexFolderQueueTraits {
-  int queue = 0;
-  int queueEnd;
-  DirectoryScanner ds;
-  typedef void return_type;
-
-  return_type RetreiveItem() {
-    const TSTRING &filepath = ds.Files()[queue];
-    FilehandleITFC(filepath);
-  }
-
-  operator bool() { return queue < queueEnd; }
-  void operator++(int) { queue++; }
-  int NumQueues() const { return queueEnd; }
-};
-
 int _tmain(int argc, TCHAR *argv[]) {
   setlocale(LC_ALL, "");
-  printer.AddPrinterFunction(wprintf);
+  printer.AddPrinterFunction(UPrintf);
+  printline(appHeader);
 
-  printline(TEXConvert_DESC ", " TEXConvert_COPYRIGHT
-                            "\nSimply drag'n'drop files into application or "
-                            "use as " TEXConvert_PRODUCT_NAME
-                            " file1 file2 ...\n");
+  AFileInfo configInfo(std::to_string(*argv));
+  auto configName = configInfo.GetFullPathNoExt().to_string() + ".config";
+  try {
+    auto doc = XMLFromFile(configName);
+    ReflectorXMLUtil::LoadV2(settings, doc, true);
+  } catch (const es::FileNotFoundError &e) {
+  }
+  {
+    pugi::xml_document doc = {};
+    std::stringstream str;
+    settings.GetHelp(str);
+    auto buff = str.str();
+    doc.append_child(pugi::node_comment).set_value(buff.data());
 
-  TFileInfo configInfo(*argv);
-  const TSTRING configName =
-      configInfo.GetPath() + configInfo.GetFileName() + _T(".config");
-
-  settings.FromXML(configName);
-
-  pugi::xml_document doc = {};
-  pugi::xml_node mainNode(settings.ToXML(doc));
-  mainNode.prepend_child(pugi::xml_node_type::node_comment).set_value(help);
-
-  doc.save_file(configName.c_str(), "\t",
-                pugi::format_write_bom | pugi::format_indent);
+    ReflectorXMLUtil::SaveV2a(settings, doc,
+                              {ReflectorXMLUtil::Flags_ClassNode});
+    XMLToFile(configName, doc,
+              {XMLFormatFlag::WriteBOM, XMLFormatFlag::IndentAttributes});
+  }
 
   if (argc < 2) {
     printerror("Insufficient argument count, expected at least 1.");
-    printer << help << pressKeyCont >> 1;
-    getchar();
+    printline(configHelp);
     return 1;
   }
 
-  if (argv[1][1] == '?' || argv[1][1] == 'h') {
-    printer << help << pressKeyCont >> 1;
-    getchar();
+  if (IsHelp(argv[1])) {
+    printline(configHelp);
     return 0;
   }
 
-  if (settings.Generate_Log)
-    settings.CreateLog(configInfo.GetPath() + configInfo.GetFileName());
+  if (settings.Generate_Log) {
+    settings.CreateLog(configInfo.GetFullPathNoExt().to_string());
+  }
+
+  std::vector<std::string> files;
+
+  for (int a = 1; a < argc; a++) {
+    auto fileName = std::to_string(argv[a]);
+    auto type = FileType(fileName);
+
+    switch (type) {
+    case FileType_e::Directory: {
+      DirectoryScanner sc;
+      sc.AddFilter(settings.Folder_scan_TEX_only ? ".tex." : ".dds");
+      printline("Scanning: " << fileName);
+      sc.Scan(fileName);
+      printline("Files found: " << sc.Files().size());
+
+      std::transform(std::make_move_iterator(sc.begin()),
+                     std::make_move_iterator(sc.end()),
+                     std::back_inserter(files),
+                     [](auto &&item) { return std::move(item); });
+
+      break;
+    }
+    case FileType_e::File:
+      files.emplace_back(std::move(fileName));
+      break;
+    default:
+      printerror("Invalid path: " << fileName);
+      break;
+    }
+  }
 
   printer.PrintThreadID(true);
 
-  TexQueueTraits texQue;
-  texQue.files = argv;
-  texQue.queue = 1;
-  texQue.queueEnd = argc;
-
-  RunThreadedQueue(texQue);
-
-  std::vector<const TCHAR *> folders;
-
-  for (int a = 1; a < argc; a++) {
-    const TCHAR *curItem = argv[a];
-
-    while (*curItem) {
-      if (*curItem == '.')
-        break;
-
-      curItem++;
+  RunThreadedQueue(files.size(), [&](size_t index) {
+    try {
+      FilehandleITFC(files[index]);
+    } catch (const std::exception &e) {
+      printerror(e.what());
     }
-
-    if (!*curItem)
-      folders.push_back(argv[a]);
-  }
-
-  if (folders.size()) {
-    printer.PrintThreadID(false);
-    printline("Scanning folders for ",
-              << (settings.Folder_scan_TEX_only ? "TEX" : "DDS") << " files.");
-
-    TexFolderQueueTraits flQue;
-    flQue.ds.AddFilter(settings.Folder_scan_TEX_only ? _T(".tex.")
-                                                     : _T(".dds"));
-
-    size_t lastFileCount = 0;
-
-    for (auto &f : folders) {
-      printline("Scanning: ", << f);
-      flQue.ds.Scan(f);
-      printline("Files found: ", << flQue.ds.Files().size() - lastFileCount);
-      lastFileCount = flQue.ds.Files().size();
-    }
-
-    printline("Scanning done, total files found: ", << lastFileCount);
-    flQue.queueEnd = static_cast<int>(lastFileCount);
-    printer.PrintThreadID(true);
-    RunThreadedQueue(flQue);
-  }
+  });
 
   return 0;
 }

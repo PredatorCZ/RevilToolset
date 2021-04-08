@@ -1,9 +1,21 @@
 cmake_minimum_required(VERSION 3.3)
 
+set(CMAKE_CXX_STANDARD 14)
 project(RevilToolset VERSION 1.0)
 
-if (CMAKE_SIZEOF_VOID_P EQUAL 4 AND WIN32)
-    add_subdirectory(SPACConvert)
-endif()
+# vgmstream fix
+find_package(PkgConfig REQUIRED)
 
-add_subdirectory(TEXConvert)
+set(TPD_PATH ${CMAKE_CURRENT_SOURCE_DIR}/3rd_party)
+set(BUILD_SHARED_LIBS ON CACHE BOOL "")
+set(PUGI_AS_SHARED ON CACHE BOOL "")
+set(BUILD_STATIC_OBJECTS OFF CACHE BOOL "")
+add_subdirectory(${TPD_PATH}/RevilLib)
+
+include(targetex)
+include(chartype)
+
+#add_subdirectory(spac_conv)
+add_subdirectory(re_tex_convert)
+add_subdirectory(arc_conv)
+add_subdirectory(ddon_sngw)

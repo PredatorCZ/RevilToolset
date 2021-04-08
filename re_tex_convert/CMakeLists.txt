@@ -1,29 +1,29 @@
 cmake_minimum_required(VERSION 3.3)
 
-project(TEXConvert VERSION 1.0)
-
-set(CMAKE_INSTALL_PREFIX ${CMAKE_SOURCE_DIR})
-set(TPD_PATH ${CMAKE_CURRENT_SOURCE_DIR}/../3rd_party)
-set(TARGETEX_LOCATION ${TPD_PATH}/precore/cmake)
-include(${TARGETEX_LOCATION}/targetex.cmake)
-include(${TARGETEX_LOCATION}/chartype.cmake)
+project(RETEXConvert VERSION 1.0)
 
 build_target(
-	TYPE APP
-	SOURCES
-		tex_convert.cpp
-        ${TPD_PATH}/precore/datas/MasterPrinter.cpp
-		${TPD_PATH}/precore/datas/reflector.cpp
-		${TPD_PATH}/precore/datas/reflectorXML.cpp
-		${TPD_PATH}/RevilLib/3rd_party/pugixml/src/pugixml.cpp
-	INCLUDES
-		${TPD_PATH}/precore
-		${TPD_PATH}/RevilLib/3rd_party/pugixml/src
-	AUTHOR "Lukas Cone"
-	DESCR "RE/MTF TEX Converter"
-	NAME "TEXConvert"
-	START_YEAR 2020
-)
+  NAME
+  tex_conv_re
+  TYPE
+  APP
+  SOURCES
+  tex_convert.cpp
+  LINKS
+  pugixml
+  AUTHOR
+  "Lukas Cone"
+  DESCR
+  "RE TEX Converter"
+  START_YEAR
+  2020)
 
-install(TARGETS TEXConvert
-	DESTINATION ${CMAKE_INSTALL_PREFIX}/bin)
+install(TARGETS tex_conv_re DESTINATION ${CMAKE_INSTALL_PREFIX}/bin)
+set_precore_sources(
+  tex_conv_re
+  multi_thread
+  directory_scanner
+  master_printer
+  reflector_xml
+  reflector
+  stat)
