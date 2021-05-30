@@ -18,7 +18,7 @@ build_target(
   START_YEAR
   2020)
 
-install(TARGETS tex_conv_re DESTINATION ${CMAKE_INSTALL_PREFIX}/bin)
+install(TARGETS tex_conv_re DESTINATION ${CMAKE_INSTALL_PREFIX})
 set_precore_sources(
   tex_conv_re
   multi_thread

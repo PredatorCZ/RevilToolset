@@ -2,8 +2,6 @@ cmake_minimum_required(VERSION 3.3)
 
 project(SPACConvert VERSION 2.0)
 
-set(CMAKE_INSTALL_PREFIX ${CMAKE_SOURCE_DIR})
-
 set(CMAKE_CURRENT_SOURCE_DIR
     ${TPD_PATH}/vgmstream
     CACHE STRING "" FORCE)
@@ -55,6 +53,6 @@ set_precore_sources(spac_conv multi_thread directory_scanner master_printer
                     reflector_xml reflector)
 
 setup_target(spac_conv TRUE)
-install_dlls(${CMAKE_INSTALL_PREFIX}/bin)
+install_dlls(${CMAKE_INSTALL_PREFIX})
 
-install(TARGETS spac_conv DESTINATION ${CMAKE_INSTALL_PREFIX}/bin)
+install(TARGETS spac_conv DESTINATION ${CMAKE_INSTALL_PREFIX})

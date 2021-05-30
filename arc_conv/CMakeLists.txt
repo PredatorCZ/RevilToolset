@@ -27,7 +27,7 @@ build_target(
   START_YEAR
   2020)
 
-install(TARGETS arc_conv DESTINATION ${CMAKE_INSTALL_PREFIX}/bin)
+install(TARGETS arc_conv DESTINATION ${CMAKE_INSTALL_PREFIX})
 set_precore_sources(
   arc_conv
   multi_thread

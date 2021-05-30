@@ -1,26 +1,29 @@
 cmake_minimum_required(VERSION 3.12)
 
-project(DDONSngw VERSION 1.0)
+project(REAsset2GLTF VERSION 1.0)
 
 build_target(
   NAME
-  ddon_sngw
+  reasset_to_gltf
   TYPE
   APP
   SOURCES
-  ddon_sngw.cpp
+  reasset_to_gltf
   LINKS
   pugixml
+  revil
+  INCLUDES
+  ${TPD_PATH}/gltf
   AUTHOR
   "Lukas Cone"
   DESCR
-  "DD:Online SNGW converter"
+  "RE Assets to GLTF"
   START_YEAR
   2021)
 
-install(TARGETS ddon_sngw DESTINATION ${CMAKE_INSTALL_PREFIX})
+install(TARGETS reasset_to_gltf DESTINATION ${CMAKE_INSTALL_PREFIX})
 set_precore_sources(
-  ddon_sngw
+  reasset_to_gltf
   multi_thread
   directory_scanner
   master_printer
