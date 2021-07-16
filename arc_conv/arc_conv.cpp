@@ -34,6 +34,9 @@
 #include "zlib.h"
 #include <cinttypes>
 
+#include "../src/mtf_arc/ext_mhs2.hpp"
+#include "../src/mtf_arc/util_scan_vfs.hpp"
+
 using namespace revil;
 
 #pragma region XMemDecompress
@@ -220,7 +223,6 @@ void Extract(BinReaderRef rd, const std::string &outDir,
   rd.Read(id);
   rd.Pop();
   ARC hdr;
-  ARCFiles files;
 
   if (id == SFHID) {
     backup = ProcessHFS(rd);
@@ -230,13 +232,11 @@ void Extract(BinReaderRef rd, const std::string &outDir,
     rd.Pop();
   }
 
-  if (id == ARCCID) {
-    std::tie(hdr, files) = ReadARCC(rd);
-  } else {
-    std::tie(hdr, files) = ReadARC(rd);
-  }
-
   Platform platform = id == CRAID ? Platform::PS3 : Platform::WinPC;
+
+  if (settings.Platform != RPlatform::Auto) {
+    platform = Platform(settings.Platform);
+  }
 
   AFileInfo fleInfo(outDir);
   std::string extrpath;
@@ -249,92 +249,110 @@ void Extract(BinReaderRef rd, const std::string &outDir,
     extrpath = fleInfo.GetFolder();
   }
 
-  mkdirs(extrpath, files, [](auto &f) { return f.fileName; });
+  auto WriteFiles = [&](auto &files) {
+    mkdirs(extrpath, files, [](auto &f) { return f.fileName; });
 
-  std::string inBuffer;
-  std::string outBuffer;
+    std::string inBuffer;
+    std::string outBuffer;
+    [&inBuffer, &outBuffer, &files] {
+      size_t maxSize = 0;
+      size_t maxSizeUnc = 0;
 
-  [&inBuffer, &outBuffer, &files] {
-    size_t maxSize = 0;
-    size_t maxSizeUnc = 0;
+      for (auto &f : files) {
+        if (f.uncompressedSize > maxSizeUnc) {
+          maxSizeUnc = f.uncompressedSize;
+        }
 
-    for (auto &f : files) {
-      if (f.uncompressedSize > maxSizeUnc) {
-        maxSizeUnc = f.uncompressedSize;
-      }
-
-      if (f.compressedSize > maxSize) {
-        maxSize = f.compressedSize;
-      }
-    }
-
-    if (maxSizeUnc < 0x8000) {
-      maxSizeUnc = 0x8000;
-    }
-
-    inBuffer.resize(maxSize);
-    outBuffer.resize(maxSizeUnc);
-  }();
-
-  for (auto &f : files) {
-    if (!f.compressedSize) {
-      continue;
-    }
-
-    rd.Seek(f.offset);
-
-    if (platform == Platform::PS3 && f.compressedSize == f.uncompressedSize) {
-      rd.ReadBuffer(&outBuffer[0], f.compressedSize);
-
-      if (id == ARCCID) {
-        enc.Decode(&outBuffer[0], f.compressedSize);
-      }
-    } else {
-      rd.ReadBuffer(&inBuffer[0], f.compressedSize);
-
-      if (id == ARCCID) {
-        enc.Decode(&inBuffer[0], f.compressedSize);
-      }
-
-      if (hdr.version == 0x11 && hdr.LZXTag) {
-        DecompressLZX(&inBuffer[0], f.compressedSize, &outBuffer[0],
-                      f.uncompressedSize);
-      } else {
-        z_stream infstream;
-        infstream.zalloc = Z_NULL;
-        infstream.zfree = Z_NULL;
-        infstream.opaque = Z_NULL;
-        infstream.avail_in = f.compressedSize;
-        infstream.next_in = reinterpret_cast<Bytef *>(&inBuffer[0]);
-        infstream.avail_out = outBuffer.size();
-        infstream.next_out = reinterpret_cast<Bytef *>(&outBuffer[0]);
-        inflateInit(&infstream);
-        int state = inflate(&infstream, Z_FINISH);
-        inflateEnd(&infstream);
-
-        if (state < 0) {
-          throw std::runtime_error(infstream.msg);
+        if (f.compressedSize > maxSize) {
+          maxSize = f.compressedSize;
         }
       }
+
+      if (maxSizeUnc < 0x8000) {
+        maxSizeUnc = 0x8000;
+      }
+
+      inBuffer.resize(maxSize);
+      outBuffer.resize(maxSizeUnc);
+    }();
+
+    for (auto &f : files) {
+      if (!f.compressedSize) {
+        continue;
+      }
+
+      rd.Seek(f.offset);
+
+      if (platform == Platform::PS3 && f.compressedSize == f.uncompressedSize) {
+        rd.ReadBuffer(&outBuffer[0], f.compressedSize);
+
+        if (id == ARCCID) {
+          enc.Decode(&outBuffer[0], f.compressedSize);
+        }
+      } else {
+        rd.ReadBuffer(&inBuffer[0], f.compressedSize);
+
+        if (id == ARCCID) {
+          enc.Decode(&inBuffer[0], f.compressedSize);
+        }
+
+        if (hdr.version == 0x11 && hdr.LZXTag) {
+          DecompressLZX(&inBuffer[0], f.compressedSize, &outBuffer[0],
+                        f.uncompressedSize);
+        } else {
+          z_stream infstream;
+          infstream.zalloc = Z_NULL;
+          infstream.zfree = Z_NULL;
+          infstream.opaque = Z_NULL;
+          infstream.avail_in = f.compressedSize;
+          infstream.next_in = reinterpret_cast<Bytef *>(&inBuffer[0]);
+          infstream.avail_out = outBuffer.size();
+          infstream.next_out = reinterpret_cast<Bytef *>(&outBuffer[0]);
+          inflateInit(&infstream);
+          int state = inflate(&infstream, Z_FINISH);
+          inflateEnd(&infstream);
+
+          if (state < 0) {
+            throw std::runtime_error(infstream.msg);
+          }
+        }
+      }
+
+      AFileInfo cfleWrap(f.fileName);
+      auto ext = revil::GetExtension(f.typeHash, settings.Title, platform);
+      std::string filePath =
+          extrpath + cfleWrap.GetFullPath().to_string() + '.';
+
+      if (ext.empty()) {
+        char buffer[0x10]{};
+        snprintf(buffer, sizeof(buffer), "%.8" PRIX32, f.typeHash);
+        filePath += buffer;
+      } else {
+        filePath += ext.to_string();
+      }
+
+      std::ofstream str(filePath, std::ios::out | std::ios::binary);
+      if (!str.fail()) {
+        str.write(outBuffer.data(), f.uncompressedSize);
+        str.close();
+      }
     }
+  };
 
-    AFileInfo cfleWrap(f.fileName);
-    auto ext = revil::GetExtension(f.typeHash, settings.Title, platform);
-    std::string filePath = extrpath + cfleWrap.GetFullPath().to_string() + '.';
+  auto ts = revil::GetTitleSupport(settings.Title, Platform(settings.Platform));
 
-    if (ext.empty()) {
-      char buffer[0x10]{};
-      snprintf(buffer, sizeof(buffer), "%.8" PRIX32, f.typeHash);
-      filePath += buffer;
+  if (ts->arc.extendedFilePath) {
+    ARCExtendedFiles files;
+    std::tie(hdr, files) = ReadExtendedARC(rd);
+    WriteFiles(files);
+  } else {
+    ARCFiles files;
+    if (id == ARCCID) {
+      std::tie(hdr, files) = ReadARCC(rd);
     } else {
-      filePath += ext.to_string();
+      std::tie(hdr, files) = ReadARC(rd);
     }
-
-    std::ofstream str(filePath, std::ios::out | std::ios::binary);
-    if (!str.fail()) {
-      str.write(outBuffer.data(), f.uncompressedSize);
-      str.close();
-    }
+    WriteFiles(files);
   }
 }
 
@@ -548,12 +566,19 @@ void ArcConvInit(const std::string &configName) {
   }
 }
 
+void Dump();
+
 int _tmain(int argc, TCHAR *argv[]) {
   setlocale(LC_ALL, "");
   AFileInfo configInfo(std::to_string(argv[0]));
   auto configName = configInfo.GetFullPathNoExt().to_string();
   auto configPath = configName + ".config";
   ArcConvInit(configPath);
+
+  ScanVFS("/mnt/r/Unpacked Games/mhs2_nsw/", extMHS2, revil::Platform::NSW,
+          ReadExtendedARC);
+
+  return 0;
 
   if (argc < 2) {
     printerror("Insufficient argument count, expected at least 1.");

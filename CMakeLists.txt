@@ -17,7 +17,7 @@ add_subdirectory(${TPD_PATH}/RevilLib)
 include(targetex)
 include(chartype)
 
-#add_subdirectory(spac_conv)
+add_subdirectory(spac_conv)
 add_subdirectory(re_tex_convert)
 add_subdirectory(arc_conv)
 add_subdirectory(ddon_sngw)

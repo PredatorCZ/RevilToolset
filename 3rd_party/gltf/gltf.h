@@ -1416,7 +1416,8 @@ namespace gltf
 
     inline void to_json(nlohmann::json & json, Buffer const & buffer)
     {
-        detail::WriteField("byteLength", json, buffer.byteLength, {});
+        json["byteLength"] = buffer.byteLength;
+        //detail::WriteField("byteLength", json, buffer.byteLength, {});
         detail::WriteField("name", json, buffer.name);
         detail::WriteField("uri", json, buffer.uri);
         detail::WriteExtensions(json, buffer.extensionsAndExtras);
@@ -1425,7 +1426,8 @@ namespace gltf
     inline void to_json(nlohmann::json & json, BufferView const & bufferView)
     {
         detail::WriteField("buffer", json, bufferView.buffer, -1);
-        detail::WriteField("byteLength", json, bufferView.byteLength, {});
+        json["byteLength"] = bufferView.byteLength;
+        //detail::WriteField("byteLength", json, bufferView.byteLength, {});
         detail::WriteField("byteOffset", json, bufferView.byteOffset, {});
         detail::WriteField("byteStride", json, bufferView.byteStride, {});
         detail::WriteField("name", json, bufferView.name);

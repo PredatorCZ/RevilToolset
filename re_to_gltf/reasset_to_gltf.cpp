@@ -18,7 +18,12 @@
 using json = nlohmann::json;
 using namespace fx;
 
-static struct { bool binaryGLTF = true; } debug;
+static struct {
+  bool binaryGLTF = false;
+  // Keys must be float according to standard
+  // However it works in blender
+  bool compressKeys = false;
+} debug;
 
 static struct REAsset2GLTF : SettingsManager<REAsset2GLTF> {
   bool Generate_Log = false;
@@ -90,28 +95,21 @@ size_t CompressKeys(const std::vector<float> &times, BinWritterRef wr,
   keyAccess.min.push_back(0);
   keyAccess.max.push_back(duration);
 
-  doc.bufferViews.emplace_back();
-  auto &buffView = doc.bufferViews.back();
-  buffView.buffer = doc.buffers.size();
-  buffView.byteOffset = wr.Tell();
-
   auto writeData = [&](auto &containter) {
     using vtype =
         typename std::remove_reference<decltype(containter)>::type::value_type;
     size_t valueSize = sizeof(vtype);
     wr.WriteContainer(containter);
-    buffView.byteStride = valueSize;
-    buffView.byteLength = valueSize * times.size();
     keyAccess.componentType = valueSize == 2
                                   ? gltf::Accessor::ComponentType::UnsignedShort
                                   : gltf::Accessor::ComponentType::UnsignedByte;
   };
 
   if (times.size() > 255) {
-    auto processed = resample<uint16>(times, 1.f / duration, 0xffff);
+    auto processed = resample<uint16>(times, 1.f, 0xffff);
     writeData(processed);
   } else {
-    auto processed = resample<uint8>(times, 1.f / duration, 0xff);
+    auto processed = resample<uint8>(times, 1.f, 0xff);
     const size_t numKeys = processed.size();
 
     for (size_t i = 0; i < numKeys - 1; i++) {
@@ -123,8 +121,8 @@ size_t CompressKeys(const std::vector<float> &times, BinWritterRef wr,
       }
     }
 
-    if (processed.back() != 0xff) {
-      auto processed = resample<uint16>(times, 1.f / duration, 0xffff);
+    if (fltcmp(processed.back() * (1.f / 0xff), duration, 0.0001f)) {
+      auto processed = resample<uint16>(times, 1.f, 0xffff);
       writeData(processed);
     } else {
       writeData(processed);
@@ -139,20 +137,21 @@ size_t WriteTimes(const std::vector<float> &times, BinWritterRef wr,
   const float duration = times.back();
   size_t accessIndex = doc.accessors.size();
 
-  doc.accessors.emplace_back();
-  auto &keyAccess = doc.accessors.back();
-  keyAccess.bufferView = doc.bufferViews.size();
-  keyAccess.count = times.size();
-  keyAccess.type = gltf::Accessor::Type::Scalar;
-  keyAccess.componentType = gltf::Accessor::ComponentType::Float;
+  if (debug.compressKeys && duration <= 1.f) {
+    CompressKeys(times, wr, doc);
+  } else {
+    doc.accessors.emplace_back();
+    auto &keyAccess = doc.accessors.back();
+    keyAccess.bufferView = doc.bufferViews.size();
+    keyAccess.count = times.size();
+    keyAccess.type = gltf::Accessor::Type::Scalar;
+    keyAccess.componentType = gltf::Accessor::ComponentType::Float;
+    keyAccess.min.push_back(0);
+    keyAccess.max.push_back(duration);
 
-  doc.bufferViews.emplace_back();
-  auto &buffView = doc.bufferViews.back();
-  buffView.buffer = doc.buffers.size();
-  buffView.byteOffset = wr.Tell();
-  buffView.byteLength = 4 * times.size();
+    wr.WriteContainer(times);
+  }
 
-  wr.WriteContainer(times);
   wr.ApplyPadding();
 
   return accessIndex;
@@ -282,17 +281,34 @@ void GLTF::ProcessAnimation(const uni::Motion *anim) {
       doc.accessors.back().count = upperLimit;
     }
 
-    const size_t bwid = doc.bufferViews.size();
-    doc.bufferViews.emplace_back();
-    auto &buffView = doc.bufferViews.back();
-    buffView.buffer = doc.buffers.size();
-    buffView.byteOffset = wr.Tell();
+    animation.samplers.emplace_back();
+    auto &sampler = animation.samplers.back();
+    sampler.input = keyAccessIndex;
+    sampler.output = doc.accessors.size();
+
+    animation.channels.emplace_back();
+    auto &curChannel = animation.channels.back();
+    curChannel.sampler = animation.samplers.size();
+    curChannel.target.node = boneRemaps.at(a->BoneIndex());
+
+    doc.accessors.emplace_back();
+    auto &transAccess = doc.accessors.back();
+    transAccess.bufferView = doc.bufferViews.size();
+    transAccess.count = stripResult.values.size();
+    transAccess.byteOffset = wr.Tell();
 
     if (isVec3) {
+      transAccess.componentType = gltf::Accessor::ComponentType::Float;
+      transAccess.type = gltf::Accessor::Type::Vec3;
+
       for (auto &i : stripResult.values) {
         wr.Write(Vector(i));
       }
     } else {
+      transAccess.componentType = gltf::Accessor::ComponentType::Short;
+      transAccess.normalized = true;
+      transAccess.type = gltf::Accessor::Type::Vec4;
+
       for (auto &i : stripResult.values) {
         wr.Write(Vector4A16(i * 32767).Convert<int16>());
       }
@@ -300,44 +316,19 @@ void GLTF::ProcessAnimation(const uni::Motion *anim) {
 
     wr.ApplyPadding();
 
-    buffView.byteLength = stripResult.values.size();
-
-    animation.channels.emplace_back();
-    auto &curChannel = animation.channels.back();
-    curChannel.sampler = animation.samplers.size();
-    curChannel.target.node = boneRemaps.at(a->BoneIndex());
-
     switch (a->TrackType()) {
     case uni::MotionTrack::Position:
       curChannel.target.path = "translation";
-      buffView.byteLength *= sizeof(Vector);
       break;
     case uni::MotionTrack::Rotation:
       curChannel.target.path = "rotation";
-      buffView.byteLength *= sizeof(SVector4);
       break;
     case uni::MotionTrack::Scale:
       curChannel.target.path = "scale";
-      buffView.byteLength *= sizeof(Vector);
       break;
     default:
       break;
     }
-
-    animation.samplers.emplace_back();
-    auto &sampler = animation.samplers.back();
-    sampler.input = keyAccessIndex;
-    sampler.output = doc.accessors.size();
-
-    doc.accessors.emplace_back();
-    auto &transAccess = doc.accessors.back();
-    transAccess.bufferView = bwid;
-    transAccess.componentType = isVec3 ? gltf::Accessor::ComponentType::Float
-                                       : gltf::Accessor::ComponentType::Short;
-    transAccess.normalized = !isVec3;
-    transAccess.type =
-        isVec3 ? gltf::Accessor::Type::Vec3 : gltf::Accessor::Type::Vec4;
-    transAccess.count = stripResult.values.size();
   }
 
   doc.animations.emplace_back(std::move(animation));
@@ -359,6 +350,8 @@ void GLTF::ProcessSkeletons(const uni::SkeletonsConst &skels) {
     bone.name = b->Name();
     auto parent = b->Parent();
     auto index = doc.nodes.size();
+    int32 hash = b->Index();
+    bone.extensionsAndExtras["extras"]["hash"] = hash;
 
     if (parent) {
       doc.nodes[boneRemaps.at(parent->Index())].children.push_back(index);
@@ -371,13 +364,33 @@ void GLTF::ProcessSkeletons(const uni::SkeletonsConst &skels) {
 }
 
 void GLTF::Pipeline(const revil::REAsset &asset) {
+  const size_t cBegin = wr.Tell();
+  wr.SetRelativeOrigin(cBegin);
   auto skels = asset.As<uni::SkeletonsConst>();
   ProcessSkeletons(skels);
   auto anims = asset.As<uni::MotionsConst>();
   MakeKeyBuffers(anims);
 
+  doc.bufferViews.emplace_back();
+  auto &cBuffer = doc.bufferViews.back();
+  cBuffer.buffer = doc.buffers.size();
+  cBuffer.byteLength = wr.Tell();
+  cBuffer.byteOffset = cBegin;
+  cBuffer.name = "common_data";
+  wr.ResetRelativeOrigin(false);
+
   for (auto a : *anims) {
+    const size_t aBegin = wr.Tell();
+    wr.SetRelativeOrigin(aBegin);
     ProcessAnimation(a.get());
+
+    doc.bufferViews.emplace_back();
+    auto &aBuffer = doc.bufferViews.back();
+    aBuffer.buffer = doc.buffers.size();
+    aBuffer.byteLength = wr.Tell();
+    aBuffer.byteOffset = aBegin;
+    aBuffer.name = a->Name() + "-data";
+    wr.ResetRelativeOrigin(false);
   }
 
   doc.buffers.emplace_back();
@@ -386,10 +399,10 @@ void GLTF::Pipeline(const revil::REAsset &asset) {
   auto buffer = str.str();
   { es::Dispose(str); }
   mainBuffer.data.resize(mainBuffer.byteLength);
+  memcpy(mainBuffer.data.data(), buffer.data(), mainBuffer.byteLength);
   if (!debug.binaryGLTF) {
     mainBuffer.SetEmbeddedResource();
   }
-  memcpy(mainBuffer.data.data(), buffer.data(), mainBuffer.byteLength);
 }
 
 void ProcessFile(const std::string &fileName) {
@@ -399,7 +412,8 @@ void ProcessFile(const std::string &fileName) {
   GLTF main;
   main.Pipeline(asset);
   AFileInfo info(fileName);
-  auto outFile = info.GetFullPathNoExt().to_string() + ".gltf";
+  auto outFile = info.GetFullPathNoExt().to_string() +
+                 (debug.binaryGLTF ? ".glb" : ".gltf");
   gltf::Save(main.doc, outFile, debug.binaryGLTF);
 }
 

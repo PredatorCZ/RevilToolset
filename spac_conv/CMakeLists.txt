@@ -49,10 +49,18 @@ build_target(
   START_YEAR
   2019)
 
-set_precore_sources(spac_conv multi_thread directory_scanner master_printer
-                    reflector_xml reflector)
+set_precore_sources(
+  spac_conv
+  multi_thread
+  directory_scanner
+  master_printer
+  reflector_xml
+  reflector
+  stat)
 
 setup_target(spac_conv TRUE)
-install_dlls(${CMAKE_INSTALL_PREFIX})
+if(MSVC)
+  install_dlls(${CMAKE_INSTALL_PREFIX})
+endif()
 
 install(TARGETS spac_conv DESTINATION ${CMAKE_INSTALL_PREFIX})
