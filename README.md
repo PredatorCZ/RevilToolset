@@ -1,3 +1,7 @@
+This repo has been archived, it contains out of date toolset.
+
+Further development/releases will be available in [RevilToolset](https://github.com/PredatorCZ/RevilLib/tree/master/toolset) subproject for [RevilLib](https://github.com/PredatorCZ/RevilLib).
+
 # RevilToolset
 
 Revil Toolset is a collection of modding tools for RE Engine/MT Framework titles.
